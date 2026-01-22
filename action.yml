@@ -36,6 +36,10 @@ inputs:
     required: false
     default: 2097152
 
+outputs:
+  download-url:
+    description: 'The signed download URL of the uploaded asset'
+
 runs:
   using: node20
   main: dist/index.js

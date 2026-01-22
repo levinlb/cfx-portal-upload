@@ -5,7 +5,7 @@ import axios from 'axios'
 
 import { createReadStream, statSync } from 'fs'
 import { basename } from 'path'
-import { ReUploadResponse, SSOResponseBody } from './types'
+import { AssetDetailsResponse, ReUploadResponse, SSOResponseBody } from './types'
 import {
   deleteIfExists,
   resolveAssetId,
@@ -77,6 +77,12 @@ export async function run(): Promise<void> {
 
       zipPath = await getZipPath(assetName, zipPath, makeZip)
       await uploadZip(zipPath, assetId, chunkSize, cookies)
+
+      const downloadUrl = await getAssetDownloadUrl(assetId, cookies)
+      if (downloadUrl) {
+        core.setOutput('download-url', downloadUrl)
+        core.info(`Asset download URL: ${downloadUrl}`)
+      }
     } else {
       throw new Error(
         'Redirect failed. Make sure the provided Cookie is valid.'
@@ -335,4 +341,41 @@ async function completeUpload(assetId: string, cookies: string): Promise<void> {
   )
 
   core.info('Upload completed.')
+}
+
+/**
+ * Fetches the download URL for an asset.
+ * @param assetId
+ * @param cookies
+ * @returns {Promise<string | null>} Resolves with the download URL or null if not available.
+ */
+async function getAssetDownloadUrl(
+  assetId: string,
+  cookies: string
+): Promise<string | null> {
+  try {
+    core.info('Fetching asset download URL...')
+
+    const response = await axios.get<AssetDetailsResponse>(
+      getUrl('ASSET_DETAILS', assetId),
+      {
+        headers: {
+          Cookie: cookies
+        }
+      }
+    )
+
+    if (response.data.file?.download_url) {
+      return response.data.file.download_url
+    }
+
+    core.debug('No download URL found in asset response.')
+    core.debug(JSON.stringify(response.data))
+    return null
+  } catch (error) {
+    core.warning(
+      `Failed to fetch asset download URL: ${error instanceof Error ? error.message : String(error)}`
+    )
+    return null
+  }
 }
