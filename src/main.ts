@@ -86,7 +86,7 @@ export async function run(): Promise<void> {
       await uploadZip(zipPath, assetId, chunkSize, cookies)
 
       await waitForAssetReady(assetId, cookies, 60000, 5000, assetName)
-      const downloadUrl = await getAssetDownloadUrl(assetId, cookies)
+      const downloadUrl = await getAssetDownloadUrl(page, assetId)
       if (downloadUrl) {
         core.setOutput('downloadUrl', downloadUrl)
         core.info(`Asset download URL: ${downloadUrl}`)
@@ -448,33 +448,69 @@ async function waitForAssetReady(
 }
 
 /**
- * Fetches the download URL for an asset from the portal API.
+ * Fetches the download URL for an asset by visiting the portal and clicking download.
+ * @param page - Puppeteer page instance
  * @param assetId - The asset ID
- * @param cookies - Cookies for authentication.
  * @returns {Promise<string | null>} Resolves with the download URL or null if not available.
  */
 async function getAssetDownloadUrl(
-  assetId: string,
-  cookies: string
+  page: Page,
+  assetId: string
 ): Promise<string | null> {
   try {
     core.info('Fetching asset download URL...')
 
-    const response = await axios.get<DownloadUrlResponse>(
-      getUrl('DOWNLOAD', assetId),
-      {
-        headers: {
-          Cookie: cookies
+    const assetUrl = `https://portal.cfx.re/assets/created-assets`
+    core.debug(`Navigating to asset page: ${assetUrl}`)
+
+    await page.goto(assetUrl, {
+      waitUntil: 'domcontentloaded'
+    })
+
+    await page.waitForSelector('[data-sentry-component="DownloadButton"]')
+
+    // Set up a listener to capture the download URL redirect
+    const downloadPromise = new Promise<string | null>(resolve => {
+      const timeout = setTimeout(() => {
+        resolve(null)
+      }, 10000)
+
+      page.on('request', request => {
+        const url = request.url()
+        if (url.includes('content-scw.cfx.re/assets/')) {
+          clearTimeout(timeout)
+          resolve(url)
+        }
+      })
+    })
+
+    core.debug('Looking for download button...')
+    const downloadButton = await page.$('[data-sentry-component="DownloadButton"]')
+
+    if (downloadButton) {
+      await downloadButton.click()
+    } else {
+      core.debug('DownloadButton component not found, searching by text...')
+      const buttons = await page.$$('button, a')
+      for (const button of buttons) {
+        const text = await button.evaluate(
+          el => el.textContent?.toLowerCase() || ''
+        )
+        if (text.includes('download')) {
+          await button.click()
+          break
         }
       }
-    )
-
-    if (response.data.url) {
-      core.debug(`Download URL: ${response.data.url}`)
-      return response.data.url
     }
 
-    core.debug('No download URL found in response.')
+    const downloadUrl = await downloadPromise
+
+    if (downloadUrl) {
+      core.debug(`Captured download URL: ${downloadUrl}`)
+      return downloadUrl
+    }
+
+    core.debug('No download URL captured.')
     return null
   } catch (error) {
     core.warning(
