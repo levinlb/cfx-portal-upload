@@ -380,19 +380,20 @@ async function getAssetDownloadUrl(
     })
 
     core.debug('Looking for download button...')
-    const downloadButton = await page.$('button:has-text("Download"), a:has-text("Download"), [data-testid="download"], .download-button, button[aria-label*="download" i]')
+    const downloadButton = await page.$('[data-sentry-component="DownloadButton"]')
 
-    if (!downloadButton) { 
+    if (downloadButton) {
+      await downloadButton.click()
+    } else {
+      core.debug('DownloadButton component not found, searching by text...')
       const buttons = await page.$$('button, a')
       for (const button of buttons) {
         const text = await button.evaluate(el => el.textContent?.toLowerCase() || '')
-        if (text.includes('download')) {
+        if (text.includes('Download')) {
           await button.click()
           break
         }
       }
-    } else {
-      await downloadButton.click()
     }
 
     downloadUrl = await downloadPromise
