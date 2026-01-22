@@ -3,9 +3,16 @@ import puppeteer, { Browser, Page } from 'puppeteer'
 import FormData from 'form-data'
 import axios from 'axios'
 
-import { createReadStream, statSync } from 'fs'
+import { createReadStream, createWriteStream, statSync } from 'fs'
+import { Readable } from 'stream'
 import { basename } from 'path'
-import { ReUploadResponse, SSOResponseBody } from './types'
+import {
+  Asset,
+  AssetResponse,
+  DownloadUrlResponse,
+  ReUploadResponse,
+  SSOResponseBody
+} from './types'
 import {
   deleteIfExists,
   resolveAssetId,
@@ -78,7 +85,8 @@ export async function run(): Promise<void> {
       zipPath = await getZipPath(assetName, zipPath, makeZip)
       await uploadZip(zipPath, assetId, chunkSize, cookies)
 
-      const downloadUrl = await getAssetDownloadUrl(page, assetId)
+      await waitForAssetReady(assetId, cookies, 60000, 5000, assetName)
+      const downloadUrl = await getAssetDownloadUrl(assetId, cookies)
       if (downloadUrl) {
         core.setOutput('downloadUrl', downloadUrl)
         core.info(`Asset download URL: ${downloadUrl}`)
@@ -344,66 +352,127 @@ async function completeUpload(assetId: string, cookies: string): Promise<void> {
 }
 
 /**
- * Fetches the download URL for an asset by visiting the portal and clicking download.
- * @param page - Puppeteer page instance
- * @param assetId - The asset ID
- * @returns {Promise<string | null>} Resolves with the download URL or null if not available.
+ * Polls the assets endpoint to check if the asset is ready.
+ * The asset is considered ready if its state is 'active'.
+ * If assetName is provided, it will use it as a search parameter.
+ * Otherwise, it will scan through pages until it finds the asset.
+ *
+ * @param assetId The asset id to search for.
+ * @param cookies Cookies for authentication.
+ * @param timeout Time in milliseconds to wait for the asset to become ready.
+ * @param interval Polling interval in milliseconds.
+ * @param assetName (Optional) The asset name to use in the search.
+ * @throws If the asset is not ready within the timeout period.
  */
-async function getAssetDownloadUrl(
-  page: Page,
-  assetId: string
-): Promise<string | null> {
-  try {
-    core.info('Fetching asset download URL...')
+async function waitForAssetReady(
+  assetId: string,
+  cookies: string,
+  timeout = 60000,
+  interval = 5000,
+  assetName?: string
+): Promise<void> {
+  const startTime = Date.now()
 
-    const assetUrl = `https://portal.cfx.re/assets/created-assets`
-    core.debug(`Navigating to asset page: ${assetUrl}`)
+  while (Date.now() - startTime < timeout) {
+    let foundAsset: Asset | null = null
 
-    await page.goto(assetUrl, {
-      waitUntil: 'networkidle0'
-    })
-
-    let downloadUrl: string | null = null
-
-    const downloadPromise = new Promise<string | null>(resolve => {
-      const timeout = setTimeout(() => {
-        resolve(null)
-      }, 10000)
-
-      page.on('request', request => {
-        const url = request.url()
-        if (url.includes('content-scw.cfx.re/assets/')) {
-          clearTimeout(timeout)
-          resolve(url)
-        }
-      })
-    })
-
-    core.debug('Looking for download button...')
-    const downloadButton = await page.$('[data-sentry-component="DownloadButton"]')
-
-    if (downloadButton) {
-      await downloadButton.click()
+    if (assetName) {
+      const res = await axios.get<AssetResponse>(
+        `https://portal-api.cfx.re/v1/me/assets?page=1&search=${encodeURIComponent(
+          assetName
+        )}&sort=asset.id&direction=desc`,
+        { headers: { Cookie: cookies } }
+      )
+      foundAsset =
+        res.data.items.find(
+          (item: Asset) =>
+            String(item.id) === String(assetId) || item.name === assetName
+        ) || null
     } else {
-      core.debug('DownloadButton component not found, searching by text...')
-      const buttons = await page.$$('button, a')
-      for (const button of buttons) {
-        const text = await button.evaluate(el => el.textContent?.toLowerCase() || '')
-        if (text.includes('Download')) {
-          await button.click()
-          break
+      let page = 1
+      while (!foundAsset) {
+        const res = await axios.get<AssetResponse>(
+          `https://portal-api.cfx.re/v1/me/assets?page=${page}&search=&sort=asset.id&direction=desc`,
+          { headers: { Cookie: cookies } }
+        )
+        const items = res.data.items
+        if (!items || items.length === 0) break
+        foundAsset =
+          items.find((item: Asset) => String(item.id) === String(assetId)) ||
+          null
+        if (!foundAsset) {
+          page++
         }
       }
     }
 
-    downloadUrl = await downloadPromise
+    if (foundAsset) {
+      core.debug(`Asset state: ${foundAsset.state}`)
+      if (foundAsset.state === 'active') {
+        core.info('Asset is ready for download.')
+        return
+      } else if (foundAsset.state === 'invalid') {
+        if (
+          foundAsset.errors &&
+          foundAsset.errors.general &&
+          foundAsset.errors.general.length > 0
+        ) {
+          const errorsArray = foundAsset.errors.general
+          const errorMsg = errorsArray.join(', ')
+          const errorLabel = errorsArray.length === 1 ? 'Error' : 'Errors'
+          throw new Error(`Asset upload failed. ${errorLabel}: ${errorMsg}`)
+        } else {
+          core.info(
+            'Asset state is "invalid", but no errors were found. Waiting...'
+          )
+        }
+      } else if (foundAsset.state === 'submitted') {
+        core.info(
+          'Asset has successfully been submitted. Waiting for asset to be active...'
+        )
+      } else {
+        throw new Error(
+          `Asset state is '${foundAsset.state}'. Asset is not ready for download.`
+        )
+      }
+    } else {
+      core.info('Asset not found in response. Waiting...')
+    }
+    await new Promise(resolve => setTimeout(resolve, interval))
+  }
+  throw new Error(
+    'Asset was not ready for download within the specified timeout.'
+  )
+}
 
-    if (downloadUrl) {
-      core.debug(`Captured download URL: ${downloadUrl}`)
-      return downloadUrl
+/**
+ * Fetches the download URL for an asset from the portal API.
+ * @param assetId - The asset ID
+ * @param cookies - Cookies for authentication.
+ * @returns {Promise<string | null>} Resolves with the download URL or null if not available.
+ */
+async function getAssetDownloadUrl(
+  assetId: string,
+  cookies: string
+): Promise<string | null> {
+  try {
+    core.info('Fetching asset download URL...')
+
+    const response = await axios.get<DownloadUrlResponse>(
+      getUrl('DOWNLOAD', assetId),
+      {
+        headers: {
+          Cookie: cookies
+        }
+      }
+    )
+
+    if (response.data.url) {
+      core.debug(`Download URL: ${response.data.url}`)
+      return response.data.url
     }
 
-    core.debug('No download URL captured.')
+    core.debug('No download URL found in response.')
     return null
   } catch (error) {
     core.warning(
@@ -411,4 +480,48 @@ async function getAssetDownloadUrl(
     )
     return null
   }
+}
+
+/**
+ * Downloads the asset file from the portal.
+ * @param assetId
+ * @param cookies
+ * @param downloadPath The file path where the asset will be saved.
+ * @returns {Promise<void>} Resolves when the download is complete.
+ */
+async function downloadAsset(
+  assetId: string,
+  cookies: string,
+  downloadPath: string
+): Promise<void> {
+  const portalDownloadUrl = getUrl('DOWNLOAD', assetId)
+  core.info(`Fetching download URL from ${portalDownloadUrl} ...`)
+
+  const initialResponse = await axios.get<DownloadUrlResponse>(
+    portalDownloadUrl,
+    {
+      headers: {
+        Cookie: cookies
+      },
+      responseType: 'json'
+    }
+  )
+
+  const realDownloadUrl: string = initialResponse.data.url
+  core.info(`Downloading asset from ${realDownloadUrl} ...`)
+
+  const response = await axios.get(realDownloadUrl, {
+    responseType: 'stream'
+  })
+
+  const readableStream = response.data as Readable
+  const writer = createWriteStream(downloadPath)
+  readableStream.pipe(writer)
+
+  await new Promise<void>((resolve, reject) => {
+    writer.on('finish', resolve)
+    writer.on('error', reject)
+  })
+
+  core.info(`Downloaded asset saved to ${downloadPath}`)
 }

@@ -6,10 +6,22 @@ export interface ReUploadResponse {
 export interface Asset {
   id: number
   name: string
+  state: string
+  errors?: {
+    general?: string[]
+  }
+}
+
+export interface AssetResponse {
+  items: Asset[]
 }
 
 export interface SearchResponse {
   items: Asset[]
+}
+
+export interface DownloadUrlResponse {
+  url: string
 }
 
 export interface SSOResponseBody {
@@ -21,5 +33,6 @@ export enum Urls {
   SSO = 'auth/discourse?return=',
   REUPLOAD = 'assets/{id}/re-upload',
   UPLOAD_CHUNK = 'assets/{id}/upload-chunk',
-  COMPLETE_UPLOAD = 'assets/{id}/complete-upload'
+  COMPLETE_UPLOAD = 'assets/{id}/complete-upload',
+  DOWNLOAD = 'assets/{id}/download'
 }
