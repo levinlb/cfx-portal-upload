@@ -37,7 +37,7 @@ inputs:
     default: 2097152
 
 outputs:
-  download-url:
+  downloadUrl:
     description: 'The signed download URL of the uploaded asset'
 
 runs:

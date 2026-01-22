@@ -80,11 +80,11 @@ export async function run(): Promise<void> {
 
       const downloadUrl = await getAssetDownloadUrl(assetId, cookies)
       if (downloadUrl) {
-        core.setOutput('download-url', downloadUrl)
+        core.setOutput('downloadUrl', downloadUrl)
         core.info(`Asset download URL: ${downloadUrl}`)
       }
     } else {
-      throw new Error(
+      throw new Error(  
         'Redirect failed. Make sure the provided Cookie is valid.'
       )
     }
