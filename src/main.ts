@@ -430,6 +430,8 @@ async function waitForAssetReady(
         core.info(
           'Asset has successfully been submitted. Waiting for asset to be active...'
         )
+      } else if (foundAsset.state === 'created') {
+        core.info('Asset has been created. Waiting for asset to be active...')
       } else {
         throw new Error(
           `Asset state is '${foundAsset.state}'. Asset is not ready for download.`
