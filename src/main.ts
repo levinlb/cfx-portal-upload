@@ -5,7 +5,7 @@ import axios from 'axios'
 
 import { createReadStream, statSync } from 'fs'
 import { basename } from 'path'
-import { AssetDetailsResponse, ReUploadResponse, SSOResponseBody } from './types'
+import { ReUploadResponse, SSOResponseBody } from './types'
 import {
   deleteIfExists,
   resolveAssetId,
@@ -78,7 +78,7 @@ export async function run(): Promise<void> {
       zipPath = await getZipPath(assetName, zipPath, makeZip)
       await uploadZip(zipPath, assetId, chunkSize, cookies)
 
-      const downloadUrl = await getAssetDownloadUrl(assetId, cookies)
+      const downloadUrl = await getAssetDownloadUrl(page, assetId)
       if (downloadUrl) {
         core.setOutput('downloadUrl', downloadUrl)
         core.info(`Asset download URL: ${downloadUrl}`)
@@ -344,33 +344,65 @@ async function completeUpload(assetId: string, cookies: string): Promise<void> {
 }
 
 /**
- * Fetches the download URL for an asset.
- * @param assetId
- * @param cookies
+ * Fetches the download URL for an asset by visiting the portal and clicking download.
+ * @param page - Puppeteer page instance
+ * @param assetId - The asset ID
  * @returns {Promise<string | null>} Resolves with the download URL or null if not available.
  */
 async function getAssetDownloadUrl(
-  assetId: string,
-  cookies: string
+  page: Page,
+  assetId: string
 ): Promise<string | null> {
   try {
     core.info('Fetching asset download URL...')
 
-    const response = await axios.get<AssetDetailsResponse>(
-      getUrl('ASSET_DETAILS', assetId),
-      {
-        headers: {
-          Cookie: cookies
+    const assetUrl = `https://portal.cfx.re/assets/created-assets`
+    core.debug(`Navigating to asset page: ${assetUrl}`)
+
+    await page.goto(assetUrl, {
+      waitUntil: 'networkidle0'
+    })
+
+    let downloadUrl: string | null = null
+
+    const downloadPromise = new Promise<string | null>(resolve => {
+      const timeout = setTimeout(() => {
+        resolve(null)
+      }, 10000)
+
+      page.on('request', request => {
+        const url = request.url()
+        if (url.includes('content-scw.cfx.re/assets/')) {
+          clearTimeout(timeout)
+          resolve(url)
+        }
+      })
+    })
+
+    core.debug('Looking for download button...')
+    const downloadButton = await page.$('button:has-text("Download"), a:has-text("Download"), [data-testid="download"], .download-button, button[aria-label*="download" i]')
+
+    if (!downloadButton) { 
+      const buttons = await page.$$('button, a')
+      for (const button of buttons) {
+        const text = await button.evaluate(el => el.textContent?.toLowerCase() || '')
+        if (text.includes('download')) {
+          await button.click()
+          break
         }
       }
-    )
-
-    if (response.data.file?.download_url) {
-      return response.data.file.download_url
+    } else {
+      await downloadButton.click()
     }
 
-    core.debug('No download URL found in asset response.')
-    core.debug(JSON.stringify(response.data))
+    downloadUrl = await downloadPromise
+
+    if (downloadUrl) {
+      core.debug(`Captured download URL: ${downloadUrl}`)
+      return downloadUrl
+    }
+
+    core.debug('No download URL captured.')
     return null
   } catch (error) {
     core.warning(
