@@ -1,6 +1,6 @@
-name: 'Upload Escrow Asset'
+name: 'Upload Escrow Asset to Portal'
 description: 'Uploads an escrow asset to the cfx portal'
-author: 'Lukas Leisten'
+author: 'Fly'
 
 branding:
   icon: 'upload-cloud'
